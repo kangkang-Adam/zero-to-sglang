@@ -8,7 +8,7 @@
 
 ### 1.1 
 
-![alt text](msedge_GwofudPLzF.png)
+![alt text](images/msedge_GwofudPLzF.png)
 
 假设 prompt 是 x₁, x₂, …, xₚ，我们想生成 n 个新 token。无 KV Cache 的生成循环是这样的：
 第一步，把整个 prompt 送入模型，得到第一个新 token y₁；
@@ -21,7 +21,7 @@
 
 ## 注意力内历史 K/V 被反复计算
 
-![alt text](msedge_xXT1fVBNxR.png)
+![alt text](images/msedge_xXT1fVBNxR.png)
 
 为了看清浪费发生在哪里，我们来看单步内部的计算。假设第 t 步输入序列长度为 T，输入形状是 B×T（B 是 batch size）。经过 embedding 后，张量变成 B×T×C（C 是隐藏维度）。然后进入每一层 Transformer Block。
 
@@ -33,7 +33,7 @@
 
 ## 一个具体的例子
 
-![alt text](msedge_pY8NJ3jhaW.png)
+![alt text](images/msedge_pY8NJ3jhaW.png)
 
 假设 prompt 只有两个 token：x₁ 和 x₂。我们想生成三个新 token。
 
@@ -47,7 +47,7 @@
 
 ## 重复量到底有多大
 
-![alt text](msedge_khRjjaZVRq.png)
+![alt text](images/msedge_khRjjaZVRq.png)
 
 这种重复计算的量是可以量化的。如果只看历史 token 的 K/V 投影，第 1 步算了 1 个 token 的 K/V，第 2 步算了 2 个，第 3 步算了 3 个……第 n 步算了 n 个。总重复构造量是 1+2+3+…+n，也就是 O(n²)。这就是很多文章说“无 KV Cache 是 O(n²)”的来源之一。
 
