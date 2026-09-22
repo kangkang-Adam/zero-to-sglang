@@ -1,5 +1,9 @@
 # 第 4 章 KV Cache 优化
 
+在上一章中，我们把自回归生成拆成了 Prefill 与 Decode 两个阶段，并看到模型会逐 token 生成文本。本章进一步解释推理系统最基础也最关键的一项优化：KV Cache。它通过保存历史 token 在每层注意力中的 Key 和 Value，避免 Decode 阶段反复计算已经得到的结果，使长序列生成成为可能。
+
+本章先从没有 KV Cache 时的重复计算出发，再说明缓存的对象、读写方式与复杂度收益。下一章将在此基础上，把生成能力封装成可通过 HTTP 调用的服务。
+
 ## 1 本章学习目标
 
 完成本章学习后，你将能够：
@@ -20,7 +24,10 @@
 
 ### 2.1 一步一重算：无 KV Cache 的生成循环
 
-![alt text](images/msedge_GwofudPLzF.png)
+<div align="center">
+    <img src="./images/4-1-无KVCache生成循环.png" alt="4-1-无KVCache生成循环.png" width="800">
+<p><em>图 1. 无 KV Cache 的生成循环</em></p>
+</div>
 
 假设 prompt 是 $x_1,x_2,\ldots,x_p$，我们想生成 $n$ 个新 token。无 KV Cache 的生成循环是这样的：
 
@@ -36,7 +43,10 @@
 
 ### 2.2 浪费在哪里：历史 K/V 被反复投影
 
-![alt text](images/msedge_xXT1fVBNxR.png)
+<div align="center">
+    <img src="./images/4-2-历史KV重复投影.png" alt="4-2-历史KV重复投影.png" width="800">
+<p><em>图 2. 历史 K/V 的重复投影</em></p>
+</div>
 
 为了看清浪费发生在哪里，我们来看单步内部的计算。假设第 $t$ 步输入序列长度为 $T$，输入形状是 $B \times T$（$B$ 是 batch size）。经过 embedding 后，张量变成 $B \times T \times C$（$C$ 是隐藏维度）。然后进入每一层 Transformer Block。
 
@@ -48,7 +58,10 @@
 
 ### 2.3 一个小例子：从 [x₁, x₂] 到 [x₁, x₂, y₁, y₂]
 
-![alt text](images/msedge_pY8NJ3jhaW.png)
+<div align="center">
+    <img src="./images/4-3-无KVCache示例.png" alt="4-3-无KVCache示例.png" width="800">
+<p><em>图 3. 无 KV Cache 的生成示例</em></p>
+</div>
 
 假设 prompt 只有两个 token：$x_1$ 和 $x_2$。我们想生成三个新 token。
 
@@ -62,7 +75,10 @@
 
 ### 2.4 重复量级：O(n²) 还是 O(n³)？
 
-![alt text](images/msedge_khRjjaZVRq.png)
+<div align="center">
+    <img src="./images/4-4-重复计算复杂度.png" alt="4-4-重复计算复杂度.png" width="800">
+<p><em>图 4. 重复计算的复杂度</em></p>
+</div>
 
 这种重复计算的量是可以量化的。如果只看历史 token 的 $K/V$ 投影，第 1 步算了 1 个 token 的 $K/V$，第 2 步算了 2 个，第 3 步算了 3 个……第 $n$ 步算了 $n$ 个。总重复构造量是
 
@@ -82,15 +98,16 @@ $$
 
 但无论哪种口径，核心问题都是一样的：历史 token 的 $K/V$ 本来可以复用，却因为没有保存而每步重算。模型 forward 是无状态的，你给它什么输入，它就从头算什么，不会记得上一步算过什么。
 
-可接在 4.1 之后：
-
 ## 3 核心思想：KV Cache 到底缓存了什么
 
 一句话概括：KV Cache 缓存的是，在自回归生成过程中，每一层 self-attention 里所有历史 token 经过 Key/Value 线性投影后得到的 $K$ 和 $V$ 张量。它不缓存 Query，不缓存原始 token，也不缓存 logits。它的作用是让当前 token 只计算自己的 Query，然后直接查询历史 token 已经算好的 Key/Value。
 
 ### 3.1 从单步公式看KV Cache 到底缓存了什么
 
-![alt text](image.png)
+<div align="center">
+    <img src="./images/4-5-KVCache工作原理.png" alt="4-5-KVCache工作原理.png" width="800">
+<p><em>图 5. KV Cache 的工作原理</em></p>
+</div>
 
 设当前处理的是第 $l$ 层、第 $t$ 步。当前 token 在这一层的输入隐藏状态记作 $h_t^{(l-1)}$。进入注意力层后，模型会用三组线性投影把它分别变成 Query、Key 和 Value：
 
@@ -146,7 +163,10 @@ $$
 
 ### 3.2 缓存的是每层、每个 KV 头的 K/V
 
-![alt text](image-1.png)
+<div align="center">
+    <img src="./images/4-6-分层KVCache.png" alt="4-6-分层KVCache.png" width="800">
+<p><em>图 6. 分层 KV Cache</em></p>
+</div>
 
 KV Cache 不是一份全局缓存，而是每一层 Transformer Block 都有自己的缓存。也就是说，如果模型有 $L$ 层，那么缓存里实际保存的是：
 
@@ -215,7 +235,10 @@ $$
 
 有 KV Cache 后，生成过程分为两个阶段。
 
-![alt text](image-2.png)
+<div align="center">
+    <img src="./images/4-7-Prefill与Decode流程.png" alt="4-7-Prefill与Decode流程.png" width="800">
+<p><em>图 7. Prefill 与 Decode 的 KV Cache 流程</em></p>
+</div>
 
 **Prefill 阶段**：把完整 prompt 一次性送入模型。模型计算 prompt 中所有 token 在每一层的 K/V，并保存到 cache 中。同时得到第一个新 token。
 
@@ -431,8 +454,25 @@ $$
 \text{单步注意力：} O(T^2) \rightarrow O(T).
 $$
 
-而 decode 逐 token 查询历史所带来的累计注意力成本，仍然是 $O(n^2)$。这就是从 $O(n^2)$ 到 $O(n)$”的准确含义。
+而 decode 逐 token 查询历史所带来的累计注意力成本，仍然是 $O(n^2)$。这就是从 $O(n^2)$ 到 $O(n)$ 的准确含义。
 
+## 5 总结与测试题
+
+### 5.1 课程总结
+
+本章围绕 KV Cache 如何消除自回归生成中的重复计算，建立了以下关键认识：
+
+1. **无 Cache 的问题**：每生成一个 token，模型都会重新处理完整历史，历史 token 的 K/V 投影累计为 $O(n^2)$，完整注意力矩阵的累计计算则为 $O(n^3)$。
+2. **缓存的对象**：KV Cache 按层保存历史 token 经 Key、Value 投影后的结果；Query 只服务于当前步骤，历史 Query 不会被后续 token 使用，因此无需缓存。
+3. **Prefill 与 Decode**：Prefill 一次性计算 prompt 的全部 K/V 并写入缓存；Decode 每步只计算新 token 的 K/V、追加到缓存，并用当前 Query 查询历史 K/V。
+4. **复杂度收益与代价**：K/V 投影的累计复杂度从 $O(n^2)$ 降到 $O(n)$，单步注意力从 $O(T^2)$ 降到 $O(T)$；代价是 KV Cache 的显存占用随层数、批大小和序列长度线性增长。
+
+### 5.2 测试题
+
+1. 为什么没有 KV Cache 时，历史 token 的 Key 和 Value 会在每个 decode 步被重复计算？
+2. KV Cache 为什么只缓存 Key 和 Value，而不缓存 Query、attention 矩阵或 logits？
+3. 请比较 Prefill 与 Decode 阶段对 KV Cache 的读写方式，以及它们各自的计算特点。
+4. "KV Cache 将复杂度从 $O(n^2)$ 降到 $O(n)$"具体指的是哪部分计算？为什么完整 Decode 过程的累计注意力复杂度仍为 $O(n^2)$？
 
 ## 参考资料
 
